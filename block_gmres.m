@@ -1,6 +1,26 @@
-function [x] = block_gmres(A, b, X0, inner, outer)
-  
-  n = size(X0, 1);
+function [x, residual] = block_gmres(A, b, X0, tol, inner, outer)
+  %{
+  PURPOSE:
+  This function solves the linear system Ax=b through power iteration of A.
+  Instead of performing power iteration on a single vector as is done in GMRES,
+  a block of vectors is iterated. This provides more control over the
+  Krylov subspace and allows parallel matrix evaluations if you want to program that.
+
+  INPUT:
+  A - a function handle to the matrix
+  b - the right hand side. size = [n,1]
+  X0 - block to perform power iteration on. size = [n,m], where m is the block size
+       Note: b will be appended to X0 automatically, so X0 = [] is
+       equivalent to ordinary GMRES.
+  tol - a tolerance used in solving the reduced matrix. This is the
+        smallest number you are willing to divide by at trust the result.
+
+  OUTPUT:
+  x - the solution
+  residual - norm(A*x-b)/norm(b)
+  %}
+
+  n = size(b,  1);
   m = size(X0, 2) + 1;
   
   %approximately Hessenberg matrix
@@ -8,9 +28,17 @@ function [x] = block_gmres(A, b, X0, inner, outer)
   Q = zeros( n, m*inner); %orthonormal basis from power iteration
   x = zeros( n, 1); %solution vector we will build iteratively
 
+  %normalize the right hand side for numerical conditioning.
+  norm_b = norm(b);
+  b = b/norm_b;
+
+  %Loop over outer iterations in which Arnoldi iteration is restarted
   for j = 1:outer
-    X0_mod = [X0, b]; %always append the rhs to block guess so outer iteration is meaningful
-    [Q(:,1:m), ~] = qr( X0_mod, "econ" ); %find orthonormal basis of X0 with QR decomposition
+  
+    %Modify X0 to contain the right hand side
+    X0_mod = [X0, b];
+    [Q(:,1:m), ~] = qr( X0_mod, "econ" );
+    %^find orthonormal basis of X0 with QR decomposition
     for i = 1:inner
       %Do a loop over inner iterations
       current_block = (i-1)*m + (1:m);
@@ -21,34 +49,56 @@ function [x] = block_gmres(A, b, X0, inner, outer)
       Aq = A(Q( :, current_block )); %replace with matrix multiplication
       H( past_blocks, current_block ) = Q( :, past_blocks )' * Aq; %Project onto past basis
       Aq = Aq - Q(:,past_blocks)*H(past_blocks, current_block); %Orthogonalize with respect to this basis
-      [Q(:,next_block), H(next_block, current_block)] = qr( Aq, "econ" );
+      [Q(:,next_block), H(next_block, current_block)] = qr( Aq, "econ", "vector" );
     end
   
-    b2 = Q'*b; %Project b into Krylov subspace
-    tol = 1e-2;
-    x2 = pinv(H, tol) * b2;
-    x_outer = Q( :, 1:inner*m )*x2; %x guess from this outer iteration
-    x = x + x_outer;
-    b = b - A(x_outer);
+    %Project b into the Krylov subspace
+    b2 = Q'*b;
+    x2 = careful_QR_solve( H, b2, tol );
+
+    Ax2 = Q*H*x2;
+    x2  = Q( :, 1:inner*m )*x2; %Project back into physical space
+    
+    %update x
+    x = x + x2;
+    %update b
+    b = b - Ax2;
+
+    %If you want to check how orthonormal things were
+    %imagesc(Q'*Q);
+    %drawnow
   end
+
+  %estimate the residual after all of the outer iterations.
+  residual = norm( b );
+  %rescale x by the original norm of b
+  x = x*norm_b;
+end
+
+
+function x = careful_QR_solve(A, b, tol)
+  %compute qr with pivoting
+  [Q,R,P] = qr( A, "vector" );
   
-  %{
-  tiledlayout(1,2);
-  nexttile
-  imagesc(Q);
-  title("Arnoldi basis");
+  %check that I understand QR decompositions
+  %max(max( A(:,P) - Q*R ))
+  
+  n = size(A,2);
+  
+  R = R(1:n, 1:n);
+  Q = Q(:, 1:n);
+  b = Q'*b;
 
-  nexttile
-  imagesc(H);
-  title("Hessenberg");
-  pbaspect([ size(H,2), size(H,1), 1 ])
-
-  for i = 1:m
-    xline(i*m);
-    yline(i*m);
+  x = 0 *b;
+  for i = n:-1:1
+    if( abs(R(i,i)) < tol )
+      %We don't trust this diagonal element to maintain 
+      %numerical stability
+      continue;
+    else
+      x(i) = (b(i) - R(i,(i+1):n)*x((i+1):n))/R(i,i);
+    end
   end
-  %}
-
-  %residual = norm( A(x) - b) / norm(b);
-  %fprintf("residual = %e\n", residual );
+  %apply the permutation
+  x(P) = x;
 end

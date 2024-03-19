@@ -1,80 +1,33 @@
+%{
+Example of applying block_GMRES to Kuramoto-Sivashinsky with periodic
+boundaries, L=22
+%}
+
 N = 128;
 L = 22;
 
-x = (0:N-1)/N*2*pi;
-x = x';
+%define a column vector for a dimensionless position 0<x<2*pi
+x = (0:N-1)/N*2*pi; x = x';
 
-%initial data
-u = cos(2*x-1) + 1 - sin(x);
-
-%perturbations
-v = [0*x+1, cos(x), sin(x)];
-
-T = 10;
-steps = 128;
-
-% FIrst test runtime with size of v
-ms = 1:32;
-trials = 5;
-times = zeros( trials, numel(ms) );
-for m = ms
-  m;
-  for t = 1:trials
-  tic
-  v = rand(N,m);
-  visualize = false;
-  [u,~] = forward_shooting( u, v, T, steps, L, visualize );
-  times(t,m) = toc;
-  end
-end
-
-
-%%
-clf;
-errorbar(ms, mean(times), std(times), 'color', 'blue', 'linewidth', 2 );
-xlabel("block size");
-ylabel("walltime of matrix multiplication (s)");
-title("Batch Jacobian evaluation of KS");
-pbaspect([2,1,1]);
-yticks([1:3] * 0.01);
-%% Newton-Krylov iteration
-
-%initial data
-L = 22;
+%Guess of a periodic orbit
 u = cos(x) - sin(2*x-2) - 0.2;
-
-%spatial perturbations to use in X0
-kmax = 3;
-v = [0*x+1, cos(x.*(1:kmax)), sin(x.*kmax) ];
-m = size(v, 2);
-
 T = 20;
-steps = 256;
-
+steps = 256; %steps to take during integration
 z  = [u;T];
 
-figure(4)
-U = zeros(N,steps+1);
-U(:,1) = z(1:N);
-for i = 2:steps+1
-  visualize = false;
-  U(:,i) = forward_shooting( U(:,i-1), 0*U(:,1), z(end)/steps, 1, L, visualize );
-end
-imagesc(U);
-colorbar();
-drawnow;
-
-
-
-%Initial guess for block_GMRES
+%Block vectors to use in block_GMRES
+kmax = 5;
+tangent_vectors = [ cos(x.*(1:kmax)), sin(x.*(1:kmax)) ];
+m  = size(tangent_vectors,2);
 X0 = zeros(N+1, m+1);
-X0(1:N,1:m) = v;
-X0(  N,m+1) = 1; %add just a shift in period
+X0(1:N,1:m) = tangent_vectors;
+X0(N+1,m+1) = 1; %add just a shift in period
 
 %Newton parameters
-maxit = 128;
+maxit = 256;
 hook  = 0.1;
-inner = 4;
+tol   = 1e-1;
+inner = 2;
 outer = 1;
 
 norm_f     = zeros(maxit, 1);
@@ -85,17 +38,17 @@ for i = 1:maxit
   [~, f]  = PO_objective( z, 0*z, L, steps, N );
   J = @(dz) PO_objective( z, dz, L, steps, N );
 
-  % block_gmres evaluation
-  dz = block_gmres( J, f, X0, inner, outer );
+  %block_gmres evaluation
+  [dz, residual] = block_gmres( J, f, X0, tol, inner, outer );
   
   %update Newton info
   norm_f(i)     = norm(f);
   bGMRES_res(i) = norm(J(dz) - f)/norm(f);
-  fprintf("Step %d: |f| = %e\n", i, norm(f) );
+  fprintf("Step %d: |f| = %e\t res = %e\n", i, norm(f), residual );
 
   z = z - hook*dz;
 end
-
+%%
 visualize_newton_output( z, L, steps, norm_f, bGMRES_res );
 
 
@@ -124,8 +77,10 @@ function visualize_newton_output( z, L, steps, norm_f, bGMRES_res )
     visualize = false;
     U(:,i) = forward_shooting( U(:,i-1), 0*U(:,1), T/steps, 1, L, visualize );
   end
-  surf(U);
-  shading interp;
+  imagesc(U);
+  xlabel("t");
+  ylabel("x");
+  set(gca, "ydir", "normal");
   colorbar();
 end
 
